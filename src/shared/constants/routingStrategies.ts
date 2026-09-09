@@ -17,6 +17,7 @@ export const ROUTING_STRATEGY_VALUES = [
   "lkgp",
   "context-optimized",
   "cache-optimized",
+  "complexity-optimized",
   "fusion",
   "pipeline",
 ] as const;
@@ -227,6 +228,13 @@ export const ROUTING_STRATEGIES: RoutingStrategyOption[] = [
     combosDescKey: "pipelineDesc",
     settingsDescKey: "pipelineDesc",
     icon: "linear_scale",
+  },
+  {
+    value: "complexity-optimized",
+    labelKey: "complexityOptimized",
+    combosDescKey: "complexityOptimizedDesc",
+    settingsDescKey: "complexityOptimizedDesc",
+    icon: "psychology",
   },
 ];
 

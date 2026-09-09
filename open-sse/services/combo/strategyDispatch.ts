@@ -62,6 +62,7 @@ export const HANDLED_COMBO_STRATEGIES: readonly string[] = [
   "lkgp",
   "context-optimized",
   "cache-optimized",
+  "complexity-optimized",
   "fusion",
   "pipeline",
   "quota-share",

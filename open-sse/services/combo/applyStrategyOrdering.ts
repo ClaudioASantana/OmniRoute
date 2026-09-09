@@ -218,6 +218,15 @@ export async function applyStrategyOrdering(
       "COMBO",
       `Reset-window ordering: ${orderedTargets[0]?.modelStr}${orderedTargets[0]?.connectionId ? ` (${orderedTargets[0].connectionId})` : ""} first`
     );
+  } else if (strategy === "complexity-optimized") {
+    const { classifyPromptComplexity, sortTargetsByComplexityTier } = await import("./complexityClassifier.ts");
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const tier = classifyPromptComplexity(messages);
+    orderedTargets = sortTargetsByComplexityTier(orderedTargets, tier);
+    log.info(
+      "COMBO",
+      `Complexity-optimized ordering: Prompt classified as '${tier}', ${orderedTargets[0]?.modelStr} first`
+    );
   } else if (strategy === "context-optimized") {
     orderedTargets = sortTargetsByContextSize(orderedTargets);
     log.info("COMBO", `Context-optimized ordering: largest first (${orderedTargets[0]?.modelStr})`);
