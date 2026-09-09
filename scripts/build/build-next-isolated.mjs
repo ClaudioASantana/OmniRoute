@@ -415,8 +415,11 @@ export async function main() {
   }
 }
 
-const entryScript = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
+const entryScript = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
+console.log("[build-next-isolated] Entry match:", entryScript === import.meta.url, entryScript, import.meta.url);
 
 if (entryScript === import.meta.url) {
   await main();
 }
+
+
