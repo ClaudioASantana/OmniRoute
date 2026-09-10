@@ -104,6 +104,9 @@ function parseComboRow(row: unknown): JsonRecord | null {
     }
     // Column is 0 — keep existing JSON blob value
   }
+  if (record.name !== undefined && record.name !== null) {
+    parsed.name = record.name;
+  }
   return parsed;
 }
 
