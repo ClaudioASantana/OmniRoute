@@ -32,36 +32,38 @@ export function classifyPromptComplexity(messages: any[]): ComplexityTier {
 
     if (!contentStr) continue;
     
-    totalLength += contentStr.length;
+    if (msg.role !== "system") {
+      totalLength += contentStr.length;
+    }
     
     if (msg.role === "user") {
       lastUserContent = contentStr;
-    }
-
-    // Heuristics checks
-    if (contentStr.includes("```")) {
-      codeBlocksCount++;
-    }
-
-    // Math/Logic
-    if (
-      contentStr.includes("\\sum") || 
-      contentStr.includes("\\int") || 
-      contentStr.includes("theorem") ||
-      contentStr.includes("equation")
-    ) {
-      hasMathOrLogic = true;
-    }
-
-    // Reasoning
-    const lowerContent = contentStr.toLowerCase();
-    if (
-      lowerContent.includes("step by step") ||
-      lowerContent.includes("think deeply") ||
-      lowerContent.includes("solve this logic puzzle") ||
-      lowerContent.includes("reason through")
-    ) {
-      hasReasoningKeywords = true;
+      
+      // Heuristics checks only on user messages to avoid triggering on system prompt examples
+      if (contentStr.includes("```")) {
+        codeBlocksCount++;
+      }
+      
+      // Math/Logic
+      if (
+        contentStr.includes("\\sum") || 
+        contentStr.includes("\\int") || 
+        contentStr.includes("theorem") ||
+        contentStr.includes("equation")
+      ) {
+        hasMathOrLogic = true;
+      }
+      
+      // Reasoning
+      const lowerContent = contentStr.toLowerCase();
+      if (
+        lowerContent.includes("step by step") ||
+        lowerContent.includes("think deeply") ||
+        lowerContent.includes("solve this logic puzzle") ||
+        lowerContent.includes("reason through")
+      ) {
+        hasReasoningKeywords = true;
+      }
     }
   }
 
@@ -69,7 +71,7 @@ export function classifyPromptComplexity(messages: any[]): ComplexityTier {
     return "reasoning";
   }
 
-  if (codeBlocksCount > 0 || totalLength > 4000) {
+  if (codeBlocksCount > 0 || totalLength > 8000) {
     return "complex";
   }
 
