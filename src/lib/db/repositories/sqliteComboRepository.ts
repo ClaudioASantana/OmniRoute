@@ -117,7 +117,7 @@ function getNextSortOrder() {
 export async function getCombos(limit?: number, offset?: number) {
   const db = getDbInstance();
   let sql =
-    "SELECT id, data, sort_order, context_cache_protection FROM combos ORDER BY sort_order ASC, name COLLATE NOCASE ASC";
+    "SELECT id, name, data, sort_order, context_cache_protection FROM combos ORDER BY sort_order ASC, name COLLATE NOCASE ASC";
   const params: unknown[] = [];
   if (limit !== undefined) {
     sql += " LIMIT ? OFFSET ?";
@@ -149,7 +149,7 @@ export function getCombosCount(): number {
 export async function getComboById(id: string) {
   const db = getDbInstance();
   const row = db
-    .prepare("SELECT id, data, sort_order, context_cache_protection FROM combos WHERE id = ?")
+    .prepare("SELECT id, name, data, sort_order, context_cache_protection FROM combos WHERE id = ?")
     .get(id);
   const combo = parseComboRow(row);
   if (!combo) return null;
@@ -159,7 +159,7 @@ export async function getComboById(id: string) {
 export async function getComboByName(name: string) {
   const db = getDbInstance();
   const row = db
-    .prepare("SELECT id, data, sort_order, context_cache_protection FROM combos WHERE name = ?")
+    .prepare("SELECT id, name, data, sort_order, context_cache_protection FROM combos WHERE name = ?")
     .get(name);
   const combo = parseComboRow(row);
   if (!combo) return null;
@@ -175,7 +175,7 @@ export async function getComboByNameInsensitive(name: string) {
   const db = getDbInstance();
   const row = db
     .prepare(
-      "SELECT id, data, sort_order, context_cache_protection FROM combos WHERE name = ? COLLATE NOCASE"
+      "SELECT id, name, data, sort_order, context_cache_protection FROM combos WHERE name = ? COLLATE NOCASE"
     )
     .get(name);
   const combo = parseComboRow(row);
@@ -218,7 +218,7 @@ export async function createCombo(data: JsonRecord) {
 export async function updateCombo(id: string, data: JsonRecord): Promise<ComboUpdateResult | null> {
   const db = getDbInstance();
   const existing = db
-    .prepare("SELECT id, data, sort_order, context_cache_protection FROM combos WHERE id = ?")
+    .prepare("SELECT id, name, data, sort_order, context_cache_protection FROM combos WHERE id = ?")
     .get(id);
   if (!existing) return null;
 
