@@ -12,6 +12,8 @@
  * layout (#9436); both hoisting implementations share it.
  */
 
+import { shouldUseMidConversationSystem } from "../../executors/claudeIdentity.ts";
+
 export type HoistedCacheBoundary = "moved" | "kept" | "dropped";
 
 /** Effective cache TTL of a `cache_control` value; Anthropic defaults to 5m when `ttl` is absent. */
@@ -97,7 +99,10 @@ export function relocateHoistedCacheBoundary(
   return "kept";
 }
 
-export function extractSystemRoleMessages(payload: Record<string, unknown>): void {
+export function extractSystemRoleMessages(
+  payload: Record<string, unknown>,
+  opts: { leadingOnly?: boolean } = {}
+): void {
   if (!Array.isArray(payload.messages)) return;
   const messages = payload.messages as Array<{ role?: unknown; content?: unknown }>;
   // Treat both `system` and `developer` as system-equivalent (OpenAI's Responses
@@ -107,17 +112,37 @@ export function extractSystemRoleMessages(payload: Record<string, unknown>): voi
   const isSystemRole = (role: unknown): boolean =>
     typeof role === "string" &&
     (role.toLowerCase() === "system" || role.toLowerCase() === "developer");
-  const systemMessages = messages.filter((m) => isSystemRole(m.role));
+
+  // #9520: Anthropic rejects a `system`/`developer`-role message at messages[0] with a
+  // hard 400 ("use the top-level 'system' parameter for the initial system prompt") —
+  // only the directive-only form (empty content + output_config) is accepted inline at
+  // any position. In `leadingOnly` mode we hoist just the contiguous run of system-role
+  // messages starting at index 0 (the "initial system prompt" Anthropic requires
+  // top-level) and leave any later, genuinely mid-conversation system-role message in
+  // place — Opus accepts those behind its beta, and hoisting them would also break the
+  // prompt-cache prefix (see the call site in chatCore.ts).
+  let leadingRunEnd = messages.length;
+  if (opts.leadingOnly) {
+    leadingRunEnd = 0;
+    while (leadingRunEnd < messages.length && isSystemRole(messages[leadingRunEnd]?.role)) {
+      leadingRunEnd++;
+    }
+    if (leadingRunEnd === 0) return; // messages[0] isn't system/developer — nothing to hoist
+  }
+  const shouldExtract = (index: number, role: unknown): boolean =>
+    opts.leadingOnly ? index < leadingRunEnd : isSystemRole(role);
+
+  const systemMessages = messages.filter((m, i) => shouldExtract(i, m.role));
   if (systemMessages.length === 0) return;
 
   const extraBlocks: Array<Record<string, unknown>> = [];
   // Walk in order rather than over the filtered list: re-anchoring a hoisted `cache_control`
   // needs the messages that precede it and stay behind (#9436).
   const preceding: Array<{ content?: unknown }> = [];
-  for (const sm of messages) {
-    if (!isSystemRole(sm.role)) {
+  messages.forEach((sm, i) => {
+    if (!shouldExtract(i, sm.role)) {
       preceding.push(sm);
-      continue;
+      return;
     }
     if (typeof sm.content === "string" && sm.content.length > 0) {
       extraBlocks.push({ type: "text", text: sm.content });
@@ -135,7 +160,7 @@ export function extractSystemRoleMessages(payload: Record<string, unknown>): voi
         }
       }
     }
-  }
+  });
   if (extraBlocks.length > 0) {
     const existingSystem = payload.system;
     if (typeof existingSystem === "string" && existingSystem.length > 0) {
@@ -146,5 +171,28 @@ export function extractSystemRoleMessages(payload: Record<string, unknown>): voi
       payload.system = extraBlocks;
     }
   }
-  payload.messages = messages.filter((m) => !isSystemRole(m.role));
+  payload.messages = messages.filter((m, i) => !shouldExtract(i, m.role));
+}
+
+/**
+ * Wraps the leading-vs-full-extraction decision for the Claude passthrough call site in
+ * chatCore.ts, so it is unit-testable without pulling in the god-file's DB/credential
+ * dependencies. Mirrors the (documented) intent at that call site:
+ *
+ * - Legacy Claude models reject ANY `system`/`developer`-role message → hoist all of them.
+ * - Opus, when the request already has both `system` and `tools` and qualifies for the
+ *   context-1m beta (`shouldUseMidConversationSystem`), is allowed to keep genuinely
+ *   mid-conversation system-role messages in place (Anthropic accepts them under that
+ *   beta, and hoisting them would break the prompt-cache prefix) — but #9520: Anthropic
+ *   still hard-400s when the very first message (messages[0]) is `system`/`developer`;
+ *   only the top-level `system` field (or the directive-only content:[] form) is valid
+ *   there. So only the leading run gets hoisted in that case.
+ */
+export function extractSystemRoleMessagesForPassthrough(
+  payload: Record<string, unknown>,
+  provider: string | null | undefined,
+  model?: string | null
+): void {
+  const leadingOnly = provider === "claude" && shouldUseMidConversationSystem(payload, model);
+  extractSystemRoleMessages(payload, { leadingOnly });
 }
