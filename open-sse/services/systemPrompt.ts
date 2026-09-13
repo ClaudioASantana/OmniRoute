@@ -88,7 +88,25 @@ export function injectSystemPrompt(body) {
 
   const result = { ...body };
 
-  // OpenAI/Claude format (messages[])
+  // Anthropic Messages API: when top-level `system` is present, ONLY mutate that
+  // field. Dual-writing into messages[0] as role:"system" triggers Opus 5 400:
+  // "use the top-level 'system' parameter for the initial system prompt".
+  if (result.system !== undefined) {
+    if (typeof result.system === "string") {
+      let sys = result.system;
+      if (prefix) sys = prefix + "\n\n" + sys;
+      if (suffix) sys = sys + "\n\n" + suffix;
+      result.system = sys;
+    } else if (Array.isArray(result.system)) {
+      let arr = [...result.system];
+      if (prefix) arr = [{ type: "text", text: prefix }, ...arr];
+      if (suffix) arr = [...arr, { type: "text", text: suffix }];
+      result.system = arr;
+    }
+    return result;
+  }
+
+  // OpenAI / messages[] format (no top-level system field)
   if (result.messages && Array.isArray(result.messages)) {
     const sysIdx = result.messages.findIndex((m) => m.role === "system" || m.role === "developer");
     result.messages = [...result.messages];
@@ -115,21 +133,6 @@ export function injectSystemPrompt(body) {
     }
   }
 
-  // Claude format (system field)
-  if (result.system !== undefined) {
-    if (typeof result.system === "string") {
-      let sys = result.system;
-      if (prefix) sys = prefix + "\n\n" + sys;
-      if (suffix) sys = sys + "\n\n" + suffix;
-      result.system = sys;
-    } else if (Array.isArray(result.system)) {
-      let arr = [...result.system];
-      if (prefix) arr = [{ type: "text", text: prefix }, ...arr];
-      if (suffix) arr = [...arr, { type: "text", text: suffix }];
-      result.system = arr;
-    }
-  }
-
   return result;
 }
 
@@ -152,7 +155,17 @@ export function injectCustomSystemPrompt(body: Record<string, unknown>, prompt: 
 
   const result = { ...body };
 
-  // OpenAI/Claude messages[] format
+  // Prefer Anthropic top-level `system` — never dual-write into messages[0].
+  if (result.system !== undefined) {
+    if (typeof result.system === "string") {
+      result.system = result.system ? result.system + "\n\n" + prompt : prompt;
+    } else if (Array.isArray(result.system)) {
+      result.system = [...(result.system as unknown[]), { type: "text", text: prompt }];
+    }
+    return result;
+  }
+
+  // OpenAI / messages[] format
   if (result.messages && Array.isArray(result.messages)) {
     const sysIdx = (result.messages as Array<{ role: string; content: unknown }>).findIndex(
       (m) => m.role === "system" || m.role === "developer"
@@ -171,15 +184,6 @@ export function injectCustomSystemPrompt(body: Record<string, unknown>, prompt: 
         { role: "system", content: prompt },
         ...(result.messages as Array<{ role: string; content: unknown }>),
       ];
-    }
-  }
-
-  // Claude direct system field
-  if (result.system !== undefined) {
-    if (typeof result.system === "string") {
-      result.system = result.system ? result.system + "\n\n" + prompt : prompt;
-    } else if (Array.isArray(result.system)) {
-      result.system = [...(result.system as unknown[]), { type: "text", text: prompt }];
     }
   }
 

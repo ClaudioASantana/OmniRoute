@@ -123,6 +123,36 @@ export function applyOutputStyles(
   const bypass = shouldBypassCavemanOutputMode(messages);
   if (bypass) return { body, applied: false, skippedReason: bypass };
 
+  // Anthropic top-level `system` present → inject there, not messages[0].
+  if (body.system !== undefined) {
+    if (typeof body.system === "string") {
+      const next =
+        body.system.length > 0 ? `${body.system.trim()}\n\n${instruction}` : instruction;
+      if (typeof body.system === "string" && body.system.includes(OUTPUT_STYLE_MARKER)) {
+        return { body, applied: false, skippedReason: "already_applied" };
+      }
+      return {
+        body: { ...body, system: next },
+        applied: true,
+        appliedStyles: resolved,
+      };
+    }
+    if (Array.isArray(body.system)) {
+      const already = (body.system as Array<{ text?: string }>).some(
+        (b) => typeof b?.text === "string" && b.text.includes(OUTPUT_STYLE_MARKER)
+      );
+      if (already) return { body, applied: false, skippedReason: "already_applied" };
+      return {
+        body: {
+          ...body,
+          system: [...(body.system as unknown[]), { type: "text", text: instruction }],
+        },
+        applied: true,
+        appliedStyles: resolved,
+      };
+    }
+  }
+
   const nextMessages = [...messages];
   const first = nextMessages[0];
   if (first?.role === "system" && typeof first.content === "string") {

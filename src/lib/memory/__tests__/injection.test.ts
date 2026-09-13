@@ -113,6 +113,20 @@ describe("injectMemory — system message injection", () => {
     expect(result.messages[2]).toEqual({ role: "user", content: "Hello" });
   });
 
+  test("merges into top-level system when Claude body already has system (Opus 5)", () => {
+    const request = makeRequest({
+      system: "You are Claude",
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    const memories = [makeMemory("User prefers Portuguese")];
+    const result = injectMemory(request, memories, "claude");
+
+    expect(result.system).toContain("Memory context: User prefers Portuguese");
+    expect(result.system).toContain("You are Claude");
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toEqual({ role: "user", content: "Hello" });
+  });
+
   test("does not mutate the original request", () => {
     const request = makeRequest();
     const originalMessages = [...request.messages];

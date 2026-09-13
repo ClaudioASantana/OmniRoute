@@ -7,8 +7,8 @@ import { resolveChatCoreRequestSetup } from "./chatCore/requestSetup.ts";
 import { normalizeOpenAICompatibleTools } from "./chatCore/openAICompatibleTools.ts";
 import { buildFailureUsageRecord } from "./chatCore/failureUsage.ts";
 import { estimateFinalInputTokens } from "./chatCore/contextEstimation.ts";
-import { extractSystemRoleMessages } from "./chatCore/claudeSystemRole.ts";
-export { extractSystemRoleMessages } from "./chatCore/claudeSystemRole.ts";
+import { extractSystemRoleMessages, foldLeadingSystemRoleMessages } from "./chatCore/claudeSystemRole.ts";
+export { extractSystemRoleMessages, foldLeadingSystemRoleMessages } from "./chatCore/claudeSystemRole.ts";
 import { checkIdempotencyCache } from "./chatCore/idempotency.ts";
 import { checkSemanticCache } from "./chatCore/semanticCache.ts";
 import { checkLifecycle, resolveLifecycle } from "./chatCore/modelLifecyclePolicy.ts";
@@ -2108,13 +2108,17 @@ export async function handleChatCore({
         }
       }
 
-      // Legacy models reject role:"system" messages. Opus accepts them behind
-      // its beta, and hoisting them breaks the prompt cache prefix.
+      // Legacy models reject role:"system" messages. Opus accepts mid-conversation
+      // ones behind its beta (hoisting those breaks the prompt cache prefix), but
+      // Opus 5 still rejects a *leading* contentful system at messages[0] — fold
+      // only that prefix into top-level `system` (#13386 / messages.0 400).
       if (isClaudeCodeSemanticPassthrough) {
         if (
-          provider !== "claude" ||
-          !shouldUseMidConversationSystem(translatedBody, effectiveModel)
+          provider === "claude" &&
+          shouldUseMidConversationSystem(translatedBody, effectiveModel)
         ) {
+          foldLeadingSystemRoleMessages(translatedBody);
+        } else {
           extractSystemRoleMessages(translatedBody);
         }
         if (Array.isArray(translatedBody.messages)) {

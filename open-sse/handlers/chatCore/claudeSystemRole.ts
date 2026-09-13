@@ -148,3 +148,105 @@ export function extractSystemRoleMessages(payload: Record<string, unknown>): voi
   }
   payload.messages = messages.filter((m) => !isSystemRole(m.role));
 }
+
+function isSystemEquivalentRole(role: unknown): boolean {
+  return (
+    typeof role === "string" &&
+    (role.toLowerCase() === "system" || role.toLowerCase() === "developer")
+  );
+}
+
+/**
+ * Directive-only Claude system message: empty content[] + output_config.
+ * Anthropic accepts these mid-conversation, but NOT at messages[0] (#12584).
+ */
+function isDirectiveOnlySystem(message: Record<string, unknown>): boolean {
+  if (!isSystemEquivalentRole(message.role)) return false;
+  const content = message.content;
+  const emptyContent =
+    (Array.isArray(content) && content.length === 0) ||
+    content === "" ||
+    content == null;
+  return emptyContent && message.output_config != null;
+}
+
+function mergeTextBlocksIntoSystem(
+  payload: Record<string, unknown>,
+  extraBlocks: Array<Record<string, unknown>>
+): void {
+  if (extraBlocks.length === 0) return;
+  const existingSystem = payload.system;
+  if (typeof existingSystem === "string" && existingSystem.length > 0) {
+    payload.system = [{ type: "text", text: existingSystem }, ...extraBlocks];
+  } else if (Array.isArray(existingSystem)) {
+    payload.system = [...(existingSystem as Array<Record<string, unknown>>), ...extraBlocks];
+  } else {
+    payload.system = extraBlocks;
+  }
+}
+
+/**
+ * Opus mid-conversation path: keep mid-turn `role:"system"` messages (cache prefix),
+ * but never leave a *leading* contentful system/developer message in messages[0] —
+ * Anthropic Opus 5 rejects that and requires the initial prompt in top-level `system`.
+ *
+ * Also relocates a leading directive-only system (`content: []` + `output_config`) to
+ * after the first user turn so it is no longer at index 0 (#12584).
+ */
+export function foldLeadingSystemRoleMessages(payload: Record<string, unknown>): void {
+  if (!Array.isArray(payload.messages)) return;
+  const messages = [...(payload.messages as Array<Record<string, unknown>>)];
+  if (messages.length === 0) return;
+
+  // 1) Relocate leading directive-only off messages[0]
+  if (isDirectiveOnlySystem(messages[0])) {
+    const [directive, ...rest] = messages;
+    const userIdx = rest.findIndex(
+      (m) => typeof m.role === "string" && m.role.toLowerCase() === "user"
+    );
+    if (userIdx >= 0) {
+      rest.splice(userIdx + 1, 0, directive);
+      messages.length = 0;
+      messages.push(...rest);
+    } else {
+      messages.length = 0;
+      messages.push(...rest, directive);
+    }
+  }
+
+  // 2) Fold contiguous leading contentful system/developer into top-level `system`
+  let end = 0;
+  while (end < messages.length && isSystemEquivalentRole(messages[end].role)) {
+    if (isDirectiveOnlySystem(messages[end])) break;
+    end += 1;
+  }
+  if (end === 0) {
+    payload.messages = messages;
+    return;
+  }
+
+  const leading = messages.slice(0, end);
+  const extraBlocks: Array<Record<string, unknown>> = [];
+  const preceding: Array<{ content?: unknown }> = [];
+  for (const sm of leading) {
+    if (typeof sm.content === "string" && sm.content.length > 0) {
+      extraBlocks.push({ type: "text", text: sm.content });
+    } else if (Array.isArray(sm.content)) {
+      for (const block of sm.content as Array<Record<string, unknown>>) {
+        if (block?.type === "text" && typeof block.text === "string" && block.text.length > 0) {
+          const hoisted = { ...block };
+          if (
+            hoisted.cache_control != null &&
+            relocateHoistedCacheBoundary(hoisted.cache_control, preceding) !== "kept"
+          ) {
+            delete hoisted.cache_control;
+          }
+          extraBlocks.push(hoisted);
+        }
+      }
+    }
+    preceding.push(sm);
+  }
+  mergeTextBlocksIntoSystem(payload, extraBlocks);
+  payload.messages = messages.slice(end);
+}

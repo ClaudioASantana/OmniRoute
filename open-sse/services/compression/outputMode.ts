@@ -159,6 +159,32 @@ export function applyCavemanOutputMode(
   }
 
   const instruction = buildCavemanOutputInstruction(config, language);
+
+  // Anthropic top-level `system` present → inject there, not messages[0].
+  if (body.system !== undefined) {
+    if (typeof body.system === "string") {
+      if (body.system.includes(CAVEMAN_OUTPUT_MARKER)) {
+        return { body, applied: false, skippedReason: "already_applied" };
+      }
+      const next =
+        body.system.length > 0 ? `${body.system.trim()}\n\n${instruction}` : instruction;
+      return { body: { ...body, system: next }, applied: true };
+    }
+    if (Array.isArray(body.system)) {
+      const already = (body.system as Array<{ text?: string }>).some(
+        (b) => typeof b?.text === "string" && b.text.includes(CAVEMAN_OUTPUT_MARKER)
+      );
+      if (already) return { body, applied: false, skippedReason: "already_applied" };
+      return {
+        body: {
+          ...body,
+          system: [...(body.system as unknown[]), { type: "text", text: instruction }],
+        },
+        applied: true,
+      };
+    }
+  }
+
   const nextMessages = [...messages];
   const first = nextMessages[0];
 

@@ -24,7 +24,7 @@ export interface ChatMessage {
 export interface ChatRequest {
   model: string;
   messages: ChatMessage[];
-  system?: string;
+  system?: string | Array<Record<string, unknown>>;
   temperature?: number;
   max_tokens?: number;
   stream?: boolean;
@@ -145,6 +145,23 @@ export interface InjectMemoryOptions {
   cacheSafe?: boolean;
 }
 
+function mergeMemoryIntoTopLevelSystem(request: ChatRequest, memoryText: string): ChatRequest {
+  const existing = request.system;
+  if (typeof existing === "string") {
+    return {
+      ...request,
+      system: existing.length > 0 ? `${memoryText}\n${existing}` : memoryText,
+    };
+  }
+  if (Array.isArray(existing)) {
+    return {
+      ...request,
+      system: [{ type: "text", text: memoryText }, ...existing],
+    };
+  }
+  return { ...request, system: memoryText };
+}
+
 /**
  * #6135: place the memory as a leading system message for providers that reject
  * a non-first system role — merging into an existing index-0 system message when
@@ -157,6 +174,11 @@ function injectSystemFirst(
   count: number
 ): ChatRequest {
   log.info("memory.injection.injected", { count, strategy: "system-first", model: request.model });
+  // Anthropic-native bodies already carry top-level `system` — merge there so we
+  // never create messages[0] role:system (Opus 5 rejects that form).
+  if (request.system !== undefined) {
+    return mergeMemoryIntoTopLevelSystem(request, memoryText);
+  }
   const first = messages[0];
   if (first && first.role === "system") {
     const merged: ChatMessage = { ...first, content: `${memoryText}\n${first.content}` };
@@ -210,6 +232,17 @@ export function injectMemory(
   const cacheSafeIndex = options.cacheSafe ? messages.findLastIndex((m) => m.role === "user") : -1;
 
   const supportsSystem = providerSupportsSystemMessage(provider);
+
+  // Claude Messages API bodies already have top-level `system`. Merge memory
+  // there — never prepend role:"system" into messages[] (Opus 5 400).
+  if (supportsSystem && request.system !== undefined) {
+    log.info("memory.injection.injected", {
+      count: memories.length,
+      strategy: "top-level-system",
+      model: request.model,
+    });
+    return mergeMemoryIntoTopLevelSystem(request, memoryText);
+  }
 
   // #6135: strict providers reject a system message at a non-zero index. Never
   // apply the cache-safe mid-array splice for these — keep the system message

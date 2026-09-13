@@ -89,6 +89,9 @@ test("injectSystemPrompt: Claude body.system string — prefix/suffix wrap (#246
   assert.ok(result.system.startsWith("PRE"));
   assert.ok(result.system.includes("Claude prompt"));
   assert.ok(result.system.trimEnd().endsWith("SUF"));
+  // Must NOT dual-write a leading role:system into messages (Opus 5 400)
+  assert.equal(result.messages[0].role, "user");
+  assert.equal(result.messages.length, 1);
 });
 
 test("injectSystemPrompt: Claude array system field — prefix/suffix wrap (#2468)", () => {
@@ -103,6 +106,7 @@ test("injectSystemPrompt: Claude array system field — prefix/suffix wrap (#246
   assert.equal(result.system[1].text, "Claude prompt");
   assert.equal(result.system[2].text, "SUF");
   assert.equal(result.system.length, 3);
+  assert.equal(result.messages[0].role, "user");
 });
 
 test("injectSystemPrompt: _skipSystemPrompt bypasses", () => {
