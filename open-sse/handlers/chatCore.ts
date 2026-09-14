@@ -2108,10 +2108,12 @@ export async function handleChatCore({
         }
       }
 
-      // Legacy models reject role:"system" messages. Opus accepts mid-conversation
-      // ones behind its beta (hoisting those breaks the prompt cache prefix), but
-      // Opus 5 still rejects a *leading* contentful system at messages[0] — fold
-      // only that prefix into top-level `system` (#13386 / messages.0 400).
+      // Mid-conversation role:"system" is native only on Opus 4.8+ / Opus 5 /
+      // Fable / Mythos. For those, fold only the *leading* system prefix into
+      // top-level `system` (Opus 5 rejects messages[0] system) and keep mid-turn
+      // systems for prompt-cache stability. For Opus 4.7 and older, hoist ALL
+      // system roles — otherwise Anthropic returns 400:
+      //   "role 'system' is not supported on this model"
       if (isClaudeCodeSemanticPassthrough) {
         if (
           provider === "claude" &&

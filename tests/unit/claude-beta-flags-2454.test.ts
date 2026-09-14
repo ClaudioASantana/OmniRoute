@@ -47,13 +47,21 @@ test("#2454 Sonnet full-agent includes heavy-agent flags but omits context-1m", 
   );
 });
 
-test("#2454 Opus full-agent includes context-1m and mid-conversation-system", () => {
+test("#2454 Opus 4.7 full-agent includes context-1m but NOT mid-conversation-system", () => {
+  // Opus 4.7 rejects role:"system" in messages[] with 400 even when the beta
+  // header is present — only Opus 4.8+ / Opus 5 / Fable / Mythos support it.
   const flags = selectBetaFlags(fullAgentBody("claude-opus-4-7"));
-  assert.ok(flags.includes("context-1m-2025-08-07"), "Opus should receive context-1m");
+  assert.ok(flags.includes("context-1m-2025-08-07"), "Opus 4.7 should receive context-1m");
   assert.ok(
-    flags.includes("mid-conversation-system-2026-04-07"),
-    "Opus should receive mid-conversation-system"
+    !flags.includes("mid-conversation-system-2026-04-07"),
+    "Opus 4.7 must NOT receive mid-conversation-system"
   );
+});
+
+test("Opus 4.8 full-agent includes mid-conversation-system", () => {
+  const flags = selectBetaFlags(fullAgentBody("claude-opus-4-8"));
+  assert.ok(flags.includes("context-1m-2025-08-07"));
+  assert.ok(flags.includes("mid-conversation-system-2026-04-07"));
 });
 
 test("Opus 5 full-agent omits the legacy context-1m beta", () => {

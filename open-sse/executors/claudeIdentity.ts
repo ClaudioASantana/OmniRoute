@@ -306,10 +306,35 @@ const HEAVY_AGENT_BETA_MODEL_PREFIXES = ["claude-opus", "claude-sonnet"];
 const CONTEXT_1M_BETA_MODEL_PREFIXES = ["claude-opus"];
 const CONTEXT_1M_NATIVE_MODEL_PREFIXES = ["claude-opus-5"];
 
+/**
+ * Models that natively accept mid-conversation `role:"system"` inside messages[].
+ * Anthropic docs (2026): Opus 4.8+, Opus 5, Fable, Mythos — NOT Opus 4.7 / older.
+ * Sending mid-conversation system to Opus 4.7 returns:
+ *   400 "role 'system' is not supported on this model"
+ */
+const MID_CONVERSATION_SYSTEM_MODEL_PREFIXES = [
+  "claude-opus-4-8",
+  "claude-opus-5",
+  "claude-opus-6",
+  "claude-fable",
+  "claude-mythos",
+];
+
 function matchesModelPrefix(model: unknown, prefixes: string[]): boolean {
   if (typeof model !== "string") return false;
   const normalized = model.toLowerCase();
   return prefixes.some((prefix) => normalized.includes(prefix));
+}
+
+/** True when the model natively supports mid-conversation role:"system" in messages[]. */
+export function supportsMidConversationSystemModel(model: unknown): boolean {
+  if (typeof model !== "string") return false;
+  const normalized = model.toLowerCase();
+  if (matchesModelPrefix(normalized, MID_CONVERSATION_SYSTEM_MODEL_PREFIXES)) return true;
+  // Future Opus 4.x minors beyond 4.8 (claude-opus-4-9, …)
+  const opus4Minor = normalized.match(/claude-opus-4-(\d+)/);
+  if (opus4Minor && Number(opus4Minor[1]) >= 8) return true;
+  return false;
 }
 
 function isHeavyAgentModel(model: unknown): boolean {
@@ -335,9 +360,7 @@ export function shouldUseMidConversationSystem(
   const hasTools = Array.isArray(payload.tools) && payload.tools.length > 0;
   const effectiveModel = model ?? (typeof payload.model === "string" ? payload.model : "");
 
-  return (
-    hasSystem && hasTools && matchesModelPrefix(effectiveModel, CONTEXT_1M_BETA_MODEL_PREFIXES)
-  );
+  return hasSystem && hasTools && supportsMidConversationSystemModel(effectiveModel);
 }
 
 /**
