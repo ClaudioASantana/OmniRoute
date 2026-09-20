@@ -11,6 +11,7 @@ import type {
 import { normalizeComboRecord } from "@/lib/combos/steps";
 import { validateComboInvariant } from "@/lib/combos/invariants";
 import { getDbInstance } from "../core";
+import { deleteLKGPRowsByComboName } from "../settings/lkgp";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -41,10 +42,15 @@ function getComboId(value: unknown): string | null {
   return typeof row.id === "string" && row.id.trim().length > 0 ? row.id : null;
 }
 
+/**
+ * Enforces the SQLite row's primary key id on the parsed JSON record.
+ * The database row.id column is always authoritative over any stale id
+ * persisted inside the data JSON blob (e.g. from duplication or import).
+ */
 function withRowId(payload: string, row: JsonRecord): JsonRecord {
   const parsed = withSortOrder(payload, getSortOrder(row));
   const comboId = getComboId(row);
-  if (comboId && typeof parsed.id !== "string") {
+  if (comboId) {
     parsed.id = comboId;
   }
   return parsed;
@@ -98,6 +104,9 @@ function parseComboRow(row: unknown): JsonRecord | null {
     }
     // Column is 0 — keep existing JSON blob value
   }
+  if (record.name !== undefined && record.name !== null) {
+    parsed.name = record.name;
+  }
   return parsed;
 }
 
@@ -111,7 +120,7 @@ function getNextSortOrder() {
 export async function getCombos(limit?: number, offset?: number) {
   const db = getDbInstance();
   let sql =
-    "SELECT id, data, sort_order, context_cache_protection FROM combos ORDER BY sort_order ASC, name COLLATE NOCASE ASC";
+    "SELECT id, name, data, sort_order, context_cache_protection FROM combos ORDER BY sort_order ASC, name COLLATE NOCASE ASC";
   const params: unknown[] = [];
   if (limit !== undefined) {
     sql += " LIMIT ? OFFSET ?";
@@ -143,7 +152,7 @@ export function getCombosCount(): number {
 export async function getComboById(id: string) {
   const db = getDbInstance();
   const row = db
-    .prepare("SELECT id, data, sort_order, context_cache_protection FROM combos WHERE id = ?")
+    .prepare("SELECT id, name, data, sort_order, context_cache_protection FROM combos WHERE id = ?")
     .get(id);
   const combo = parseComboRow(row);
   if (!combo) return null;
@@ -153,7 +162,7 @@ export async function getComboById(id: string) {
 export async function getComboByName(name: string) {
   const db = getDbInstance();
   const row = db
-    .prepare("SELECT id, data, sort_order, context_cache_protection FROM combos WHERE name = ?")
+    .prepare("SELECT id, name, data, sort_order, context_cache_protection FROM combos WHERE name = ?")
     .get(name);
   const combo = parseComboRow(row);
   if (!combo) return null;
@@ -169,7 +178,7 @@ export async function getComboByNameInsensitive(name: string) {
   const db = getDbInstance();
   const row = db
     .prepare(
-      "SELECT id, data, sort_order, context_cache_protection FROM combos WHERE name = ? COLLATE NOCASE"
+      "SELECT id, name, data, sort_order, context_cache_protection FROM combos WHERE name = ? COLLATE NOCASE"
     )
     .get(name);
   const combo = parseComboRow(row);
@@ -212,7 +221,7 @@ export async function createCombo(data: JsonRecord) {
 export async function updateCombo(id: string, data: JsonRecord): Promise<ComboUpdateResult | null> {
   const db = getDbInstance();
   const existing = db
-    .prepare("SELECT id, data, sort_order, context_cache_protection FROM combos WHERE id = ?")
+    .prepare("SELECT id, name, data, sort_order, context_cache_protection FROM combos WHERE id = ?")
     .get(id);
   if (!existing) return null;
 
@@ -344,8 +353,27 @@ export async function reorderCombos(comboIds: string[]): Promise<ComboReorderRes
 
 export async function deleteCombo(id: string) {
   const db = getDbInstance();
-  const result = db.prepare("DELETE FROM combos WHERE id = ?").run(id);
-  if (result.changes === 0) return false;
+  const deleteTransaction = db.transaction(() => {
+    const combo = db.prepare("SELECT name FROM combos WHERE id = ?").get(id) as
+      { name?: string } | undefined;
+    const result = db.prepare("DELETE FROM combos WHERE id = ?").run(id);
+    if (result.changes === 0) return { deleted: false, lkgpKeys: [] as string[] };
+    return {
+      deleted: true,
+      lkgpKeys: combo?.name ? deleteLKGPRowsByComboName(combo.name) : ([] as string[]),
+    };
+  });
+
+  const { deleted, lkgpKeys } = deleteTransaction();
+  if (!deleted) return false;
+
+  if (lkgpKeys.length > 0) {
+    const { invalidateCachedLKGP } = await import("../readCache");
+    for (const key of lkgpKeys) {
+      invalidateCachedLKGP(key);
+    }
+  }
+
   return true;
 }
 

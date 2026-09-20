@@ -11,11 +11,13 @@ export const ROUTING_STRATEGY_VALUES = [
   "reset-aware",
   "reset-window",
   "headroom",
+  "quota-weighted",
   "strict-random",
   "auto",
   "lkgp",
   "context-optimized",
   "cache-optimized",
+  "complexity-optimized",
   "fusion",
   "pipeline",
 ] as const;
@@ -37,6 +39,7 @@ export type AnyRoutingStrategyValue = RoutingStrategyValue | InternalRoutingStra
 
 export const AUTO_ROUTING_STRATEGY_VALUES = [
   "rules",
+  "score",
   "cost",
   "eco",
   "latency",
@@ -171,6 +174,13 @@ export const ROUTING_STRATEGIES: RoutingStrategyOption[] = [
     icon: "battery_charging_full",
   },
   {
+    value: "quota-weighted",
+    labelKey: "quotaWeighted",
+    combosDescKey: "quotaWeightedDesc",
+    settingsDescKey: "quotaWeightedDesc",
+    icon: "pie_chart",
+  },
+  {
     value: "strict-random",
     labelKey: "strictRandom",
     combosDescKey: "strictRandomDesc",
@@ -218,6 +228,13 @@ export const ROUTING_STRATEGIES: RoutingStrategyOption[] = [
     combosDescKey: "pipelineDesc",
     settingsDescKey: "pipelineDesc",
     icon: "linear_scale",
+  },
+  {
+    value: "complexity-optimized",
+    labelKey: "complexityOptimized",
+    combosDescKey: "complexityOptimizedDesc",
+    settingsDescKey: "complexityOptimizedDesc",
+    icon: "psychology",
   },
 ];
 

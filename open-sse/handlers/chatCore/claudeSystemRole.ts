@@ -135,6 +135,21 @@ export function extractSystemRoleMessages(payload: Record<string, unknown>): voi
         }
       }
     }
+    // Directive payload (message-level output_config, as emitted by Claude
+    // Code clients): the message itself is lifted away, so fold its output
+    // configuration into the top-level parameter instead of silently dropping
+    // it — whatever shape the content had. An explicit top-level output_config
+    // wins, and among several directive messages the first one wins.
+    if (payload.output_config == null) {
+      const directive = sm as Record<string, unknown>;
+      if (
+        directive.output_config != null &&
+        typeof directive.output_config === "object" &&
+        !Array.isArray(directive.output_config)
+      ) {
+        payload.output_config = directive.output_config;
+      }
+    }
   }
   if (extraBlocks.length > 0) {
     const existingSystem = payload.system;
@@ -149,104 +164,84 @@ export function extractSystemRoleMessages(payload: Record<string, unknown>): voi
   payload.messages = messages.filter((m) => !isSystemRole(m.role));
 }
 
-function isSystemEquivalentRole(role: unknown): boolean {
-  return (
-    typeof role === "string" &&
-    (role.toLowerCase() === "system" || role.toLowerCase() === "developer")
-  );
-}
-
 /**
- * Directive-only Claude system message: empty content[] + output_config.
- * Anthropic accepts these mid-conversation, but NOT at messages[0] (#12584).
- */
-function isDirectiveOnlySystem(message: Record<string, unknown>): boolean {
-  if (!isSystemEquivalentRole(message.role)) return false;
-  const content = message.content;
-  const emptyContent =
-    (Array.isArray(content) && content.length === 0) ||
-    content === "" ||
-    content == null;
-  return emptyContent && message.output_config != null;
-}
-
-function mergeTextBlocksIntoSystem(
-  payload: Record<string, unknown>,
-  extraBlocks: Array<Record<string, unknown>>
-): void {
-  if (extraBlocks.length === 0) return;
-  const existingSystem = payload.system;
-  if (typeof existingSystem === "string" && existingSystem.length > 0) {
-    payload.system = [{ type: "text", text: existingSystem }, ...extraBlocks];
-  } else if (Array.isArray(existingSystem)) {
-    payload.system = [...(existingSystem as Array<Record<string, unknown>>), ...extraBlocks];
-  } else {
-    payload.system = extraBlocks;
-  }
-}
-
-/**
- * Opus mid-conversation path: keep mid-turn `role:"system"` messages (cache prefix),
- * but never leave a *leading* contentful system/developer message in messages[0] —
- * Anthropic Opus 5 rejects that and requires the initial prompt in top-level `system`.
+ * Moves a directive-only system message (empty content array + message-level
+ * `output_config`, the shape Claude Code clients emit) off `messages[0]`.
  *
- * Also relocates a leading directive-only system (`content: []` + `output_config`) to
- * after the first user turn so it is no longer at index 0 (#12584).
+ * Anthropic treats `messages[0]` as the initial system prompt position and
+ * rejects the directive-only form there ("use the top-level 'system' parameter
+ * for the initial system prompt"), while accepting it at any other position.
+ * The mid-conversation-system passthrough (provider `claude` + 1M-context beta
+ * models) deliberately keeps system-role messages inside `messages[]`, so a
+ * directive that arrived first would go upstream unchanged and 400. Relocate it
+ * past the first real turn instead; when the conversation has no real turn at
+ * all, fold the `output_config` into the top-level parameter (which wins when
+ * already present) and drop the now-empty message.
  */
-export function foldLeadingSystemRoleMessages(payload: Record<string, unknown>): void {
-  if (!Array.isArray(payload.messages)) return;
-  const messages = [...(payload.messages as Array<Record<string, unknown>>)];
-  if (messages.length === 0) return;
+export function relocateDirectiveOnlyMessages(payload: Record<string, unknown>): void {
+  if (!Array.isArray(payload.messages) || payload.messages.length === 0) return;
+  const messages = payload.messages as Array<Record<string, unknown>>;
+  const isSystemRole = (role: unknown): boolean =>
+    typeof role === "string" &&
+    (role.toLowerCase() === "system" || role.toLowerCase() === "developer");
+  const isEmptySystem = (m: Record<string, unknown>): boolean =>
+    m != null &&
+    typeof m === "object" &&
+    isSystemRole(m.role) &&
+    Array.isArray(m.content) &&
+    m.content.length === 0;
+  const isDirectiveOnly = (m: Record<string, unknown>): boolean =>
+    isEmptySystem(m) &&
+    m.output_config != null &&
+    typeof m.output_config === "object" &&
+    !Array.isArray(m.output_config);
 
-  // 1) Relocate leading directive-only off messages[0]
-  if (isDirectiveOnlySystem(messages[0])) {
-    const [directive, ...rest] = messages;
-    const userIdx = rest.findIndex(
-      (m) => typeof m.role === "string" && m.role.toLowerCase() === "user"
-    );
-    if (userIdx >= 0) {
-      rest.splice(userIdx + 1, 0, directive);
-      messages.length = 0;
-      messages.push(...rest);
-    } else {
-      messages.length = 0;
-      messages.push(...rest, directive);
-    }
-  }
-
-  // 2) Fold contiguous leading contentful system/developer into top-level `system`
-  let end = 0;
-  while (end < messages.length && isSystemEquivalentRole(messages[end].role)) {
-    if (isDirectiveOnlySystem(messages[end])) break;
-    end += 1;
-  }
-  if (end === 0) {
-    payload.messages = messages;
+  if (!isEmptySystem(messages[0])) {
     return;
   }
 
-  const leading = messages.slice(0, end);
-  const extraBlocks: Array<Record<string, unknown>> = [];
-  const preceding: Array<{ content?: unknown }> = [];
-  for (const sm of leading) {
-    if (typeof sm.content === "string" && sm.content.length > 0) {
-      extraBlocks.push({ type: "text", text: sm.content });
-    } else if (Array.isArray(sm.content)) {
-      for (const block of sm.content as Array<Record<string, unknown>>) {
-        if (block?.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-          const hoisted = { ...block };
-          if (
-            hoisted.cache_control != null &&
-            relocateHoistedCacheBoundary(hoisted.cache_control, preceding) !== "kept"
-          ) {
-            delete hoisted.cache_control;
-          }
-          extraBlocks.push(hoisted);
-        }
-      }
-    }
-    preceding.push(sm);
+  // Collect the whole leading run of empty system messages so consecutive
+  // directives are all relocated in one pass (handling only messages[0] would
+  // leave the second directive at the rejected position).
+  let runEnd = 0;
+  while (runEnd < messages.length && isEmptySystem(messages[runEnd])) {
+    runEnd++;
   }
-  mergeTextBlocksIntoSystem(payload, extraBlocks);
-  payload.messages = messages.slice(end);
+  const lead = messages.slice(0, runEnd);
+  const directives = lead.filter(isDirectiveOnly);
+
+  // First real (user/assistant) turn after the run. System messages with text
+  // content are not safe insertion anchors — keep walking past them, and past
+  // any non-object entries a malformed body may carry.
+  let insertAfter = -1;
+  for (let i = runEnd; i < messages.length; i++) {
+    const candidate = messages[i];
+    if (
+      candidate != null &&
+      typeof candidate === "object" &&
+      !isSystemRole(candidate.role)
+    ) {
+      insertAfter = i;
+      break;
+    }
+  }
+
+  if (insertAfter === -1) {
+    // No real turn to relocate after: fold the first directive's
+    // output_config into the top-level parameter (an explicit top-level value
+    // wins) and drop the whole run.
+    if (payload.output_config == null && directives.length > 0) {
+      payload.output_config = directives[0].output_config;
+    }
+    payload.messages = messages.slice(runEnd);
+    return;
+  }
+
+  // Move the directives (in order) past the first real turn; plain empty
+  // system messages carry nothing and are dropped.
+  payload.messages = [
+    ...messages.slice(runEnd, insertAfter + 1),
+    ...directives,
+    ...messages.slice(insertAfter + 1),
+  ];
 }
