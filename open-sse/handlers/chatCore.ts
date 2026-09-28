@@ -2398,14 +2398,14 @@ export async function handleChatCore({
           shouldUseMidConversationSystem(translatedBody, effectiveModel)
         ) {
           foldLeadingSystemRoleMessages(translatedBody);
-        } else {
-          extractSystemRoleMessages(translatedBody);
-        } else {
+
           // The mid-conversation-system path keeps system-role messages inside
           // messages[], but a directive-only message (content: [] +
           // output_config) at messages[0] is rejected by Anthropic. Move it past
           // the first real turn; Anthropic accepts the form at any other position.
           relocateDirectiveOnlyMessages(translatedBody);
+        } else {
+          extractSystemRoleMessages(translatedBody);
         }
         if (Array.isArray(translatedBody.messages)) {
           translatedBody.messages = splitMisplacedToolResults(
