@@ -528,11 +528,12 @@ export default function ModelCompatPopover({
         type="button"
         onClick={handleToggleOpen}
         disabled={disabled}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-border bg-background text-text-muted hover:bg-muted hover:text-text-main disabled:opacity-50 transition-colors"
+        className="inline-flex items-center gap-1.5 px-1.5 py-1.5 text-xs font-medium rounded-lg border sm:px-2.5 border-border bg-background text-text-muted hover:bg-muted hover:text-text-main disabled:opacity-50 transition-colors"
         title={t("compatAdjustmentsTitle")}
       >
         <span className="material-symbols-outlined text-base leading-none">tune</span>
-        {!compact && t("compatButtonLabel")}
+        {/* Phones: icon only (the title keeps the label), so a model card fits in two lines. */}
+        {!compact && <span className="hidden sm:inline">{t("compatButtonLabel")}</span>}
       </button>
       {open &&
         typeof document !== "undefined" &&
@@ -707,7 +708,10 @@ export default function ModelCompatPopover({
                       </div>
                       <button
                         type="button"
-                        disabled={disabled || headerRows.length <= 1}
+                        disabled={
+                          disabled ||
+                          (headerRows.length <= 1 && !row.name.trim() && !row.value.trim())
+                        }
                         onClick={() => removeHeaderRow(row.id)}
                         title={t("compatUpstreamRemoveRow")}
                         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/80 text-text-muted hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted transition-colors"

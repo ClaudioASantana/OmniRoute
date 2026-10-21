@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { copyToClipboard } from "@/shared/utils/clipboard";
+import { formatApiKeyLabel } from "@/shared/utils/formatting";
+import { MCP_TOOL_SCOPES } from "@/shared/constants/mcpScopes";
 import RequestLoggerDetail from "@/shared/components/RequestLoggerDetail";
 import useEmailPrivacyStore from "@/store/emailPrivacyStore";
 import {
@@ -20,14 +22,20 @@ import {
   TIMELINE_LIST_POLL_STORAGE_KEY,
   FOLLOW_LINE_X,
   LIVE_LINE_FRACTION,
+  DRAG_THRESHOLD_PX,
   computeBarRange,
   MODE_META,
   formatTimeAxis,
-  getStatusColor,
   CONVERSATION_LANE_REUSE_STORAGE_KEY,
   allocateLanes,
   truncateModel,
   formatDateLabel,
+  loadTimelineLogs,
+  mergeApiKeyOptions,
+  rememberApiKeysFromPoll,
+  nextTimelineLogs,
+  getTimelineBarColor,
+  MCP_BAR_COLOR,
 } from "@/shared/components/RequestTimeline.utils";
 
 export type { TimelineLog } from "@/shared/components/RequestTimeline.utils";
@@ -51,8 +59,6 @@ export default function RequestTimeline({
   const [panFrozenMs, setPanFrozenMs] = useState(0);
   const [liveBaseMs, setLiveBaseMs] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
-  const [dragStartX, setDragStartX] = useState(0);
-  const [dragStartOffset, setDragStartOffset] = useState(0);
   const { emailsVisible } = useEmailPrivacyStore();
   const [selectedLog, setSelectedLog] = useState<TimelineLog | null>(null);
   const [detailData, setDetailData] = useState<any>(null);
@@ -78,6 +84,10 @@ export default function RequestTimeline({
       return DEFAULT_LIST_POLL_SECONDS;
     }
   });
+  const [selectedApiKey, setSelectedApiKey] = useState("");
+  const [seenApiKeyOptions, setSeenApiKeyOptions] = useState<string[]>([]);
+  const knownApiKeyIdsRef = useRef<string[]>([]);
+  const seenApiKeyOptionsRef = useRef<string[]>([]);
   const canvasRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<number>(0);
   // Guards the ?id= deep-link mount effect below. Also armed by any manual
@@ -99,27 +109,41 @@ export default function RequestTimeline({
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/usage/call-logs?limit=200")
-      .then((res) => (res.ok ? res.json() : []))
-      .then((data) => {
-        if (!cancelled) setLogs(data);
-      })
-      .catch(() => {});
+    const refresh = () => {
+      void loadTimelineLogs(
+        fetch,
+        selectedApiKey,
+        (tool) => MCP_TOOL_SCOPES[tool],
+        knownApiKeyIdsRef.current
+      ).then((data) => {
+        if (cancelled) return;
+        const remembered = rememberApiKeysFromPoll(
+          knownApiKeyIdsRef.current,
+          seenApiKeyOptionsRef.current,
+          data,
+          selectedApiKey
+        );
+        knownApiKeyIdsRef.current = remembered.knownIds;
+        seenApiKeyOptionsRef.current = remembered.seenOptions;
+        setSeenApiKeyOptions(remembered.seenOptions);
+        setLogs((current) => nextTimelineLogs(current, data));
+      });
+    };
+    refresh();
     const id = setInterval(() => {
-      // #8354: skip the poll while the tab is backgrounded (Page Visibility
-      // API), matching the pause-when-hidden pattern in RequestLoggerV2 and
-      // UsageStats so a background tab doesn't keep hammering the API.
       if (document.visibilityState !== "visible") return;
-      fetch("/api/usage/call-logs?limit=200")
-        .then((res) => (res.ok ? res.json() : []))
-        .then((data) => setLogs(data))
-        .catch(() => {});
+      refresh();
     }, listPollSeconds * 1000);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [listPollSeconds]);
+  }, [listPollSeconds, selectedApiKey]);
+
+  const apiKeyOptions = useMemo(
+    () => mergeApiKeyOptions(seenApiKeyOptions, logs, selectedApiKey),
+    [seenApiKeyOptions, logs, selectedApiKey]
+  );
 
   useEffect(() => {
     if (!canvasRef.current) return undefined;
@@ -202,7 +226,7 @@ export default function RequestTimeline({
 
       const lane = laneMap.get(log.id) ?? 0;
       const topPx = lane * LANE_HEIGHT;
-      const color = getStatusColor(log.status, log.active);
+      const color = getTimelineBarColor(log);
       const opacity = log.active ? 0.9 : 0.7;
 
       return { log, leftPct, widthPct, topPx, color, opacity };
@@ -306,6 +330,7 @@ export default function RequestTimeline({
 
   const handleBarClick = useCallback(
     (log: TimelineLog) => {
+      if (log.kind === "mcp") return;
       initialOpenedRef.current = true;
       setSelectedLog(log);
       setDetailData(null);
@@ -414,29 +439,44 @@ export default function RequestTimeline({
     [nowMs]
   );
 
+  // Mouse panning mirrors the touch path below: a plain click must NOT steal the
+  // user out of "follow" into "pan" — only a deliberate drag switches mode. A
+  // click with no movement falls through to the bar's onClick (detail modal).
+  const mouseDragRef = useRef<{ x: number; offset: number; moved: boolean } | null>(null);
+
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
-    if (mode !== "pan") {
-      setMode("pan");
-      setPanFrozenMs(nowMs);
-      setLiveBaseMs(nowMs);
-    }
+    mouseDragRef.current = {
+      x: e.clientX,
+      offset: mode === "pan" ? panOffsetMs : 0,
+      // Already panning: any movement pans. From follow/live: wait for the threshold.
+      moved: mode === "pan",
+    };
     setIsDragging(true);
-    setDragStartX(e.clientX);
-    setDragStartOffset(mode === "pan" ? panOffsetMs : 0);
   };
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      if (!isDragging) return;
-      const dx = e.clientX - dragStartX;
+      const start = mouseDragRef.current;
+      if (!start) return;
+      const dx = e.clientX - start.x;
+      if (!start.moved && Math.abs(dx) < DRAG_THRESHOLD_PX) return;
+      if (!start.moved) {
+        start.moved = true;
+        if (mode !== "pan") {
+          setMode("pan");
+          setPanFrozenMs(nowMs);
+          setLiveBaseMs(nowMs);
+        }
+      }
       const msPerPx = windowMs / canvasWidth;
-      setPanOffsetMs(dragStartOffset - dx * msPerPx);
+      setPanOffsetMs(start.offset - dx * msPerPx);
     },
-    [isDragging, dragStartX, dragStartOffset, windowMs, canvasWidth]
+    [mode, nowMs, windowMs, canvasWidth]
   );
 
   const handleMouseUp = useCallback(() => {
+    mouseDragRef.current = null;
     setIsDragging(false);
   }, []);
 
@@ -536,6 +576,7 @@ export default function RequestTimeline({
             {(["follow", "live", "pan"] as ViewMode[]).map((m) => (
               <button
                 key={m}
+                data-testid={`timeline-mode-${m}`}
                 onClick={() => handleModeChange(m)}
                 title={t(`modes.${MODE_META[m].descriptionKey}`)}
                 className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
@@ -555,6 +596,23 @@ export default function RequestTimeline({
           >
             {t("reset")}
           </button>
+          <select
+            value={selectedApiKey}
+            onChange={(e) => setSelectedApiKey(e.target.value)}
+            aria-label={t("apiKey")}
+            className="px-2 py-1 text-[11px] text-text-muted bg-bg-subtle rounded-md border border-border"
+            data-testid="timeline-api-key-filter"
+          >
+            <option value="">{t("allApiKeys")}</option>
+            {apiKeyOptions.map((value) => {
+              const matched = logs.find((row) => (row.apiKeyId || row.apiKeyName) === value);
+              return (
+                <option key={value} value={value}>
+                  {formatApiKeyLabel(matched?.apiKeyName, matched?.apiKeyId || value)}
+                </option>
+              );
+            })}
+          </select>
           {/* Conversation lane-reuse window: how long a lane stays reserved
               for its conversation before falling back to normal packing. */}
           <label
@@ -624,6 +682,7 @@ export default function RequestTimeline({
       {/* Canvas */}
       <div
         ref={canvasRef}
+        data-testid="timeline-canvas"
         className={`flex-1 min-h-0 overflow-hidden relative bg-surface ${
           isDragging ? "cursor-grabbing" : mode === "pan" ? "cursor-grab" : ""
         }`}
@@ -669,7 +728,9 @@ export default function RequestTimeline({
             <div
               key={log.id}
               data-testid={`timeline-bar-${log.id}`}
-              className="absolute rounded-sm cursor-pointer transition-opacity duration-100"
+              className={`absolute rounded-sm transition-opacity duration-100 ${
+                log.kind === "mcp" ? "cursor-default" : "cursor-pointer"
+              }`}
               style={{
                 left: `${leftPct}%`,
                 width: `${widthPct}%`,
@@ -782,10 +843,12 @@ export default function RequestTimeline({
           <div className="flex items-center gap-2 mb-1.5">
             <div
               className="w-2.5 h-2.5 rounded-full"
-              style={{ backgroundColor: getStatusColor(hoveredLog.status, hoveredLog.active) }}
+              style={{ backgroundColor: getTimelineBarColor(hoveredLog) }}
             />
             <span className="text-[11px] font-semibold text-text-main">
-              {hoveredLog.model || t("unknownModel")}
+              {hoveredLog.kind === "mcp"
+                ? hoveredLog.toolName || t("mcpTool")
+                : hoveredLog.model || t("unknownModel")}
             </span>
             {hoveredLog.active && (
               <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-medium">
@@ -831,18 +894,34 @@ export default function RequestTimeline({
               <span>{t("status")}</span>
               <span>{hoveredLog.status || t("pending")}</span>
             </div>
-            {hoveredLog.provider && (
-              <div className="flex justify-between gap-4">
-                <span>{t("provider")}</span>
-                <span>{hoveredLog.provider}</span>
-              </div>
+            {hoveredLog.kind === "mcp" ? (
+              <>
+                <div className="flex justify-between gap-4">
+                  <span>{t("scope")}</span>
+                  <span>{hoveredLog.scopes?.length ? hoveredLog.scopes.join(", ") : "—"}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span>{t("apiKey")}</span>
+                  <span>{formatApiKeyLabel(hoveredLog.apiKeyName, hoveredLog.apiKeyId)}</span>
+                </div>
+              </>
+            ) : (
+              <>
+                {hoveredLog.provider && (
+                  <div className="flex justify-between gap-4">
+                    <span>{t("provider")}</span>
+                    <span>{hoveredLog.provider}</span>
+                  </div>
+                )}
+                <div className="flex justify-between gap-4">
+                  <span>{t("tokens")}</span>
+                  <span>
+                    {hoveredLog.tokens.in.toLocaleString()} /{" "}
+                    {hoveredLog.tokens.out.toLocaleString()}
+                  </span>
+                </div>
+              </>
             )}
-            <div className="flex justify-between gap-4">
-              <span>{t("tokens")}</span>
-              <span>
-                {hoveredLog.tokens.in.toLocaleString()} / {hoveredLog.tokens.out.toLocaleString()}
-              </span>
-            </div>
             {hoveredLog.error && (
               <div className="mt-1 text-red-400 text-[9px] break-all">{hoveredLog.error}</div>
             )}
@@ -871,6 +950,10 @@ export default function RequestTimeline({
         <div className="flex items-center gap-1">
           <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#6B7280" }} />
           <span className="text-text-muted">{t("other")}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: MCP_BAR_COLOR }} />
+          <span className="text-text-muted">{t("mcp")}</span>
         </div>
         <div className="ml-4 flex items-center gap-1.5 text-text-muted">
           <div className="w-3 border-t border-dashed border-slate-400/40" />
