@@ -458,13 +458,70 @@ function normalizeAntigravityGeminiSystemInstruction<T extends Record<string, un
     : { ...request, systemInstruction };
 }
 
+function sanitizeClaudeToolPairing(contents: AntigravityContent[]): AntigravityContent[] {
+  for (let i = 0; i < contents.length; i++) {
+    const cur = contents[i];
+    if (cur?.role === "model" && Array.isArray(cur.parts)) {
+      const calls: Array<Record<string, unknown>> = [];
+      for (const p of cur.parts) {
+        if (p && typeof p === "object" && "functionCall" in p && (p as Record<string, unknown>).functionCall) {
+          calls.push((p as Record<string, unknown>).functionCall as Record<string, unknown>);
+        }
+      }
+      if (calls.length > 0) {
+        let next = contents[i + 1];
+        if (!next || next.role !== "user") {
+          next = { role: "user", parts: [] };
+          contents.splice(i + 1, 0, next);
+        }
+        if (!Array.isArray(next.parts)) {
+          next.parts = [];
+        }
+        const responses: unknown[] = [];
+        const others: unknown[] = [];
+        for (const p of next.parts) {
+          if (p && typeof p === "object" && "functionResponse" in p) {
+            responses.push(p);
+          } else {
+            others.push(p);
+          }
+        }
+        const respondedNamesOrIds = new Set<string>();
+        for (const r of responses) {
+          const fr = (r as Record<string, unknown>).functionResponse as Record<string, unknown> | undefined;
+          if (typeof fr?.id === "string") respondedNamesOrIds.add(fr.id);
+          if (typeof fr?.name === "string") respondedNamesOrIds.add(fr.name);
+        }
+        for (const call of calls) {
+          const cid = typeof call.id === "string" ? call.id : undefined;
+          const cname = typeof call.name === "string" ? call.name : undefined;
+          const hasResp =
+            (cid && respondedNamesOrIds.has(cid)) ||
+            (cname && respondedNamesOrIds.has(cname));
+          if (!hasResp) {
+            responses.push({
+              functionResponse: {
+                ...(cid ? { id: cid } : {}),
+                name: cname || "tool",
+                response: { result: "[No response received]" },
+              },
+            });
+          }
+        }
+        next.parts = [...responses, ...others];
+      }
+    }
+  }
+  return contents;
+}
+
 function sanitizeAntigravityGeminiRequest(
   request: Record<string, unknown>
 ): Record<string, unknown> {
   const clean: Record<string, unknown> = {};
 
   if (Array.isArray(request.contents)) {
-    clean.contents = request.contents;
+    clean.contents = sanitizeClaudeToolPairing(request.contents as AntigravityContent[]);
   }
 
   if (asRecord(request.systemInstruction)) {

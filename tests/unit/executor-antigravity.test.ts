@@ -1140,3 +1140,51 @@ test("AntigravityExecutor.transformRequest maps Claude models through Gemini con
   assert.equal(result.request.temperature, undefined);
   assert.equal(result.request.toolConfig, undefined);
 });
+
+test("AntigravityExecutor.transformRequest places functionResponse first for Claude models to prevent Vertex 400 tool_pairing error", async () => {
+  const executor = new AntigravityExecutor();
+  const body = {
+    project: "project-1",
+    model: "claude-sonnet-5-5-high",
+    userAgent: "antigravity",
+    requestId: "agent-pair-1",
+    requestType: "agent",
+    request: {
+      contents: [
+        {
+          role: "model",
+          parts: [
+            { text: "Executing tool..." },
+            { functionCall: { id: "call_abc123", name: "PowerShell", args: {} } },
+          ],
+        },
+        {
+          role: "user",
+          parts: [
+            { text: "# Environment update\n - Primary working directory: G:\\" },
+            {
+              functionResponse: {
+                id: "call_abc123",
+                name: "PowerShell",
+                response: { result: "Directory listed" },
+              },
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  const result = (await executor.transformRequest(
+    "antigravity/claude-sonnet-5-5-high",
+    body,
+    true,
+    { projectId: "project-1" }
+  )) as AntigravityTransformResult;
+
+  const userTurn = result.request.contents[1] as { parts: Array<Record<string, unknown>> };
+  assert.equal(userTurn.parts.length, 2);
+  // functionResponse MUST come first so Vertex Anthropic sees tool_result immediately following tool_use
+  assert.ok(userTurn.parts[0].functionResponse, "First part must be functionResponse");
+  assert.ok(userTurn.parts[1].text, "Second part must be text");
+});
